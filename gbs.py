@@ -127,10 +127,10 @@ if __name__ == "__main__":
                         required=False,
                         type=int, default=max_cpu,
                         help='Number of CPU. Default is maximum CPU available({})'.format(max_cpu))
-    parser.add_argument('-m', '--memory', metavar=str(max_cpu),
+    parser.add_argument('-m', '--memory', metavar=str(max_mem),
                         required=False,
                         type=int, default=max_mem,
-                        help='Memory in GB. Default is 85% of total memory ({})'.format(max_mem))
+                        help='Memory in GB. Default is 85%% of total memory ({})'.format(max_mem))
     parser.add_argument('-pe', '--paired-end',
                         required=False,
                         action='store_true',  # implies default=False
