@@ -3,37 +3,70 @@
 # from gbs_methods import Methods
 import subprocess
 import os
+from pathlib import Path
 
 
 class DeepVariant(object):
-    BIN_VERSION = "0.8.0"
-    MODEL_VERSION = "0.8.0"
+    @staticmethod
+    def call_variants(ref, cram_list, deepvariant_folder, cpu):
+        ref_folder = os.path.dirname(ref)
+        ref_name = os.path.basename(ref)
+        cram_folder = os.path.dirname(cram_list[0])
 
-    MODEL_NAME = 'DeepVariant-inception_v3-{}+data-wgs_standard'.format(MODEL_VERSION)
-    MODEL_HTTP_DIR = 'https://storage.googleapis.com/deepvariant/models/DeepVariant/{}/{}'.format(
-        MODEL_VERSION, MODEL_NAME)
-    DATA_HTTP_DIR = 'https://storage.googleapis.com/deepvariant/quickstart-testdata'
+        for cram in cram_list:
+            cram_name = '.'.join(os.path.basename(cram).split('.')[:-1])  # only remove what is after the last "."
+            output_folder = deepvariant_folder + cram_name
+            DeepVariant.run_deepvariant(ref_folder, ref_name, cram_folder, cram_name, output_folder, cpu)
 
     @staticmethod
-    def start_container(name):
-        # Methods.create_output_folders(name)
-        pass
+    def run_deepvariant(ref_folder, ref_name, cram_folder, cram_name, output_folder, cpu):
+        # create output folder
+        Path(output_folder).mkdir(parents=True, exist_ok=True)
 
-    @staticmethod
-    def get_container(name, address, DATA_DIR):
         cmd = ['docker', 'run',
-               '--runtime=nvidia',
-               '--name', name,
-               '-v', '{}:/home/workspace'.format(DATA_DIR),
-               address]
+               '-v', '{}:/ref'.format(ref_folder),
+               '-v', '{}:/input'.format(cram_folder),
+               '-v', '{}:/output'.format(output_folder),
+               'google/deepvariant:1.2.0',
+               '/opt/deepvariant/bin/run_deepvariant',
+               '--model_type={}'.format('WGS'),  # [WGS,WES,PACBIO,HYBRID_PACBIO_ILLUMINA]
+               '--ref=/ref/{}'.format(ref_name),
+               '--reads=/input/{}'.format(cram_name + '.cram'),
+               '--sample_name={}'.format(cram_name),
+               '--output_vcf=/output/{}.vcf'.format(cram_name),
+               '--output_gvcf=/output/{}.gvcf'.format(cram_name),
+               # '--call_variants_extra_args="use_openvino=true"',  # Optional for Intel CPUs reduces call_variants time
+               '--num_shards={}'.format(cpu),  # use all cores for make_examples
+               '--logging_dir=/output/logs',
+               '--dry_run=false']
+
         subprocess.run(cmd)
 
-    @staticmethod
-    def set_folders(output_dir):
-        for f in ['models', 'output', 'bam', 'log', 'ref']:
-            DeepVariant.set_folders(output_dir + '/' + f)
+    def run_deepvariant(ref_folder, ref_name, cram_folder, cram_name, output_folder, cpu):
+        # https://github.com/google/deepvariant/blob/r1.2/docs/deepvariant-quick-start.md#notes-on-gpu-image
+        # https://github.com/google/deepvariant/blob/r1.2/scripts/install_nvidia_docker.sh
+        # docker pull google/deepvariant:1.2.0-gpu
 
-    @staticmethod
-    def download_model(output_folder):
-        if not os.path.exists():
-            pass
+
+        # create output folder
+        Path(output_folder).mkdir(parents=True, exist_ok=True)
+
+        cmd = ['docker', 'run',
+               '-v', '{}:/ref'.format(ref_folder),
+               '-v', '{}:/input'.format(cram_folder),
+               '-v', '{}:/output'.format(output_folder),
+               'google/deepvariant:1.2.0',
+               '/opt/deepvariant/bin/run_deepvariant',
+               '--model_type={}'.format('WGS'),  # [WGS,WES,PACBIO,HYBRID_PACBIO_ILLUMINA]
+               '--ref=/ref/{}'.format(ref_name),
+               '--reads=/input/{}'.format(cram_name + '.cram'),
+               '--sample_name={}'.format(cram_name),
+               '--output_vcf=/output/{}.vcf'.format(cram_name),
+               '--output_gvcf=/output/{}.gvcf'.format(cram_name),
+               # '--call_variants_extra_args="use_openvino=true"',  # Optional for Intel CPUs reduces call_variants time
+               '--num_shards={}'.format(cpu),  # use all cores for make_examples
+               '--logging_dir=/output/logs',
+               '--dry_run=false']
+
+        subprocess.run(cmd)
+

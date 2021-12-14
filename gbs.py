@@ -15,12 +15,14 @@
 # conda install pyVCF
 
 
-from gbs_methods import Methods
 from argparse import ArgumentParser
 from multiprocessing import cpu_count
 from psutil import virtual_memory
 import os
 from glob import glob
+from gbs_methods import Methods
+from deepvariant import DeepVariant
+from collections import defaultdict
 
 
 class GBS(object):
@@ -41,7 +43,7 @@ class GBS(object):
         self.adapters = args.adapters
 
         # Data
-        self.sample_dict = dict()
+        self.sample_dict = defaultdict(list)
 
         # Run
         self.run()
@@ -78,32 +80,51 @@ class GBS(object):
         #         Methods.parallel_trim_reads(Methods.trim_both, adapter_dict, self.sample_dict,
         #                                     self.out_folder + '/trimmed/', self.mem, self.cpu)
 
-        # Index reference genome if not already done
-        ref_index = '.'.join(self.ref.split('.')[:-1])
-        if not os.path.exists(ref_index + '.1.bt2'):
-            Methods.index_bowtie2(self.ref, ref_index, self.cpu)
-
         # Map fastq on indexed reference genome
-        Methods.parallel_map_bowtie2(self.out_folder + '/mapped/', ref_index, self.sample_dict, self.cpu)
+        mapped = self.out_folder + '/mapped/'
+        if self.read_type == 'se':
+            Methods.parallel_map_bowtie2_se(mapped, self.ref, self.sample_dict, self.cpu)
+        elif self.read_type == 'pe':
+            Methods.parallel_map_bowtie2_pe(mapped, self.ref, self.sample_dict, self.cpu)
 
         # Call variants
         if not os.path.exists(self.ref + '.fai'):
             Methods.index_samtools(self.ref)
 
         # List bam files into a text file, one per line
-        bam_list = glob(self.out_folder + '/mapped/' + '*.bam')
-        Methods.list_to_file(bam_list, self.out_folder + '/bam.list')
+        mapped = self.out_folder + '/mapped/'
+        cram_list = glob(mapped + '*.cram')
+        Methods.list_to_file(cram_list, self.out_folder + '/cram.list')
 
-        print('Calling variants with bcftools...')
-        Methods.call_variants(self.ref, self.out_folder + '/bam.list',
-                              self.out_folder + '/variants.vcf', self.cpu)
+        # print('Calling variants with bcftools...')
+        # Methods.call_variants(self.ref, self.out_folder + '/bam.list',
+        #                       self.out_folder + '/variants.vcf', self.cpu)
+
+        print('Calling vairants with DeepVariant v1.2.0...')
+        deepvariant_folder = self.out_folder + '/deepvariant/'
+        DeepVariant.call_variants(self.ref, cram_list, deepvariant_folder, self.cpu)
+
+        # Move VCF files
+        vcf_folder = self.out_folder + '/vcf/'
+        Methods.create_folders(vcf_folder)
+        Methods.move_files(deepvariant_folder, vcf_folder, '.vcf')
+
+        # Merge VCF files
+        merged_vcf = self.out_folder + '/merged.vcf'
+        Methods.merge_vcf(vcf_folder, merged_vcf)
+
         # Sort VCF file
-        print('Fixing vcf file...')
-        Methods.fix_vcf(self.out_folder + '/variants.vcf',  self.out_folder + '/variants_fixed.vcf')
+        # print('Fixing vcf file...')
+        # Methods.fix_vcf(self.out_folder + '/merged.vcf',  self.out_folder + '/fixed.vcf')
 
-        print('Sorting vcf file...')
-        Methods.sort_vcf(self.out_folder + '/variants_fixed.vcf',
-                         self.out_folder + '/variants_sorted.vcf')
+        # print('Sorting vcf file...')
+        # Methods.sort_vcf(self.out_folder + '/fixed.vcf',
+        #                  self.out_folder + '/sorted.vcf')
+
+        # Filtering VCF file
+        filtered_vcf = self.out_folder + '/filtered'
+        Methods.filter_variants(merged_vcf, filtered_vcf)
+        os.replace(self.out_folder + '/filtered.recode.vcf', self.out_folder + '/filtered.vcf')
 
 
 if __name__ == "__main__":
@@ -121,7 +142,7 @@ if __name__ == "__main__":
                         required=True,
                         help='Folder to hold the result files')
     parser.add_argument('-a', '--adapters', metavar='/left_adapters.fasta',
-                        required=True,
+                        required=False,
                         help='Fasta file with sequence of adapters to trim at the beginning of reads')
     parser.add_argument('-t', '--threads', metavar=str(max_cpu),
                         required=False,
