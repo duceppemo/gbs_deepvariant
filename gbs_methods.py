@@ -39,10 +39,6 @@ class VcfObject(object):
         self.geno = geno
 
 
-class SampleObject(object):
-    pass
-
-
 class AdapterObject(object):
     def __init__(self, direction, seq):
         # Create seq object with its attributes
@@ -82,21 +78,15 @@ class Methods(object):
 
     @staticmethod
     def get_files(in_folder, sample_dict):
-        obj = SampleObject()
         # Look for input sequence files recursively
         for root, directories, filenames in os.walk(in_folder):
             for filename in filenames:
                 if filename.endswith(tuple(Methods.accepted_extensions)):  # accept a tuple or string
                     file_path = os.path.join(root, filename)
                     sample = filename.split('.')[0].split('_R1')[0].split('_R2')[0]
-                    # if not sample_dict[sample]:
-                    #     sample_dict[sample] = list()
                     if '_R1' in filename:
-                        # obj.r1 = file_path
-                        # sample_dict[sample].insert(0, obj.r1)
                         sample_dict[sample].insert(0, file_path)
                     elif '_R2' in filename:
-                        obj.r2 = file_path
                         sample_dict[sample].insert(1, file_path)
 
     @staticmethod
@@ -229,13 +219,13 @@ class Methods(object):
         subprocess.run(right_trim, stdout=subprocess.DEVNULL, stderr=subprocess.STDOUT)
 
     @staticmethod
-    def parallel_trim_reads(trim_function, adapter_dict, sample_dict, output_folder, mem, cpu):
+    def parallel_trim_reads(trim_function, adapter_dict, sample_dict, output_folder, mem, cpu, p):
         print('Trimming reads...')
         Methods.create_folders(output_folder)
 
-        with futures.ThreadPoolExecutor(max_workers=4) as executor:
+        with futures.ThreadPoolExecutor(max_workers=p) as executor:
             # fastq, output_folder, adapter_dict, mem, cpu
-            args = ((info.file_path[0], output_folder, adapter_dict, mem, cpu/4)
+            args = ((info.file_path[0], output_folder, adapter_dict, mem, int(cpu/p))
                     for sample, info in sample_dict.items())
             for results in executor.map(lambda x: trim_function(*x), args):
                 pass
@@ -286,7 +276,7 @@ class Methods(object):
         subprocess.run(samtools_index_cmd, stdout=subprocess.DEVNULL, stderr=subprocess.STDOUT)
 
     @staticmethod
-    def parallel_map_bowtie2_se(output_folder, ref, sample_dict, cpu):
+    def parallel_map_bowtie2_se(output_folder, ref, sample_dict, cpu, p):
         # Index reference genome if not already done
         ref_index = '.'.join(ref.split('.')[:-1])
         if not os.path.exists(ref_index + '.1.bt2') and not os.path.exists(ref_index + '.1.bt2l'):
@@ -295,9 +285,9 @@ class Methods(object):
         print('Mapping reads...')
         Methods.create_folders(output_folder)
 
-        with futures.ThreadPoolExecutor(max_workers=4) as executor:
-            args = ((ref, info.file_path[0], int(cpu/4), output_folder + '/' + sample + '.cram')
-                    for sample, info in sample_dict.items())
+        with futures.ThreadPoolExecutor(max_workers=p) as executor:
+            args = ((ref, path_list[0], int(cpu/p), output_folder + '/' + sample + '.cram')
+                    for sample, path_list in sample_dict.items())
             for results in executor.map(lambda x: Methods.map_bowtie2_se(*x), args):
                 pass
 
@@ -344,7 +334,7 @@ class Methods(object):
         subprocess.run(samtools_index_cmd, stdout=subprocess.DEVNULL, stderr=subprocess.STDOUT)
 
     @staticmethod
-    def parallel_map_bowtie2_pe(output_folder, ref, sample_dict, cpu):
+    def parallel_map_bowtie2_pe(output_folder, ref, sample_dict, cpu, p):
         # Index reference genome if not already done
         ref_index = '.'.join(ref.split('.')[:-1])
         if not os.path.exists(ref_index + '.1.bt2') and not os.path.exists(ref_index + '.1.bt2l'):
@@ -353,8 +343,8 @@ class Methods(object):
         print('Mapping reads...')
         Methods.create_folders(output_folder)
 
-        with futures.ThreadPoolExecutor(max_workers=4) as executor:
-            args = ((ref, path_list[0], path_list[1], int(cpu/4), output_folder + '/' + sample + '.cram')
+        with futures.ThreadPoolExecutor(max_workers=p) as executor:
+            args = ((ref, path_list[0], path_list[1], int(cpu/p), output_folder + '/' + sample + '.cram')
                     for sample, path_list in sample_dict.items())
             for results in executor.map(lambda x: Methods.map_bowtie2_pe(*x), args):
                 pass

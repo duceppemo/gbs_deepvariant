@@ -31,6 +31,7 @@ class GBS(object):
         self.input = args.input
         self.out_folder = args.output
         self.cpu = args.threads
+        self.parallel = args.parallel
         self.mem = args.memory
         self.ref = args.reference
         if args.paired_end:
@@ -70,22 +71,22 @@ class GBS(object):
         #     if any(info.direction == 'left' for ident, info in adapter_dict.items())\
         #             and not any(info.direction == 'right' for ident, info in adapter_dict.items()):
         #         Methods.parallel_trim_reads(Methods.trim_left, adapter_dict, self.sample_dict,
-        #                                     self.out_folder + '/trimmed/', self.mem, self.cpu)
+        #                                     self.out_folder + '/trimmed/', self.mem, self.cpu, self.parallel)
         #     elif not any(info.direction == 'left' for ident, info in adapter_dict.items())\
         #             and any(info.direction == 'right' for ident, info in adapter_dict.items()):
         #         Methods.parallel_trim_reads(Methods.trim_right, adapter_dict, self.sample_dict,
-        #                                     self.out_folder + '/trimmed/', self.mem, self.cpu)
+        #                                     self.out_folder + '/trimmed/', self.mem, self.cpu, self.parallel)
         #     elif any(info.direction == 'left' for ident, info in adapter_dict.items())\
         #             and any(info.direction == 'right' for ident, info in adapter_dict.items()):
         #         Methods.parallel_trim_reads(Methods.trim_both, adapter_dict, self.sample_dict,
-        #                                     self.out_folder + '/trimmed/', self.mem, self.cpu)
+        #                                     self.out_folder + '/trimmed/', self.mem, self.cpu, self.parallel)
 
         # Map fastq on indexed reference genome
         mapped = self.out_folder + '/mapped/'
         if self.read_type == 'se':
-            Methods.parallel_map_bowtie2_se(mapped, self.ref, self.sample_dict, self.cpu)
+            Methods.parallel_map_bowtie2_se(mapped, self.ref, self.sample_dict, self.cpu, self.parallel)
         elif self.read_type == 'pe':
-            Methods.parallel_map_bowtie2_pe(mapped, self.ref, self.sample_dict, self.cpu)
+            Methods.parallel_map_bowtie2_pe(mapped, self.ref, self.sample_dict, self.cpu, self.parallel)
 
         # Call variants
         if not os.path.exists(self.ref + '.fai'):
@@ -148,6 +149,10 @@ if __name__ == "__main__":
                         required=False,
                         type=int, default=max_cpu,
                         help='Number of CPU. Default is maximum CPU available({})'.format(max_cpu))
+    parser.add_argument('-p', '--parallel', metavar=4,
+                        required=False,
+                        type=int, default=4,
+                        help='Number of samples to run in parallel')
     parser.add_argument('-m', '--memory', metavar=str(max_mem),
                         required=False,
                         type=int, default=max_mem,
