@@ -4,7 +4,7 @@
 
 # mamba create -n gbs_deepvariant
 # mamba activate gbs_deepvariant
-# mamba install -c bioconda bbmap samtools bowtie2 pysam bcftools vcftools -y
+# mamba install -c bioconda bbmap samtools bowtie2 pysam bcftools vcftools numpy -y
 # mamba install -c conda-forge psutil -y
 
 
@@ -12,12 +12,14 @@ import random
 import subprocess
 from multiprocessing import cpu_count
 from psutil import virtual_memory
+from collections import defaultdict
 import sys
 import os
 import pathlib
 from concurrent import futures
 import pysam
 import pandas as pd
+import numpy as np
 import io
 import gzip
 
@@ -77,7 +79,9 @@ class Methods(object):
         pathlib.Path(folder).mkdir(parents=True, exist_ok=True)
 
     @staticmethod
-    def get_files(in_folder, sample_dict):
+    def get_files(in_folder):
+        sample_dict = defaultdict(list)
+        # sample_dict = dict()
         # Look for input sequence files recursively
         for root, directories, filenames in os.walk(in_folder):
             for filename in filenames:
@@ -88,6 +92,12 @@ class Methods(object):
                         sample_dict[sample].insert(0, file_path)
                     elif '_R2' in filename:
                         sample_dict[sample].insert(1, file_path)
+                    else:
+                        sample_dict[sample].insert(0, file_path)
+        if not sample_dict:
+            raise Exception('Sample dictionary empty!')
+
+        return sample_dict
 
     @staticmethod
     def check_folder_empty(folder):
@@ -136,6 +146,11 @@ class Methods(object):
         """
         # Create output folder is it does not exist
         pathlib.Path(output).mkdir(parents=True, exist_ok=True)
+
+    @staticmethod
+    def flag_done(flag_file):
+        with open(flag_file, 'w') as f:
+            pass
 
     @staticmethod
     def parse_adapters(adapter_file, adapter_dict):
@@ -219,14 +234,147 @@ class Methods(object):
         subprocess.run(right_trim, stdout=subprocess.DEVNULL, stderr=subprocess.STDOUT)
 
     @staticmethod
-    def parallel_trim_reads(trim_function, adapter_dict, sample_dict, output_folder, mem, cpu, p):
-        print('Trimming reads...')
-        Methods.create_folders(output_folder)
+    def trim_illumina_se(r1, output_folder, cpu, size):
+        sample = os.path.basename(r1).split('_R1')[0]
 
-        with futures.ThreadPoolExecutor(max_workers=p) as executor:
-            # fastq, output_folder, adapter_dict, mem, cpu
-            args = ((info.file_path[0], output_folder, adapter_dict, mem, int(cpu/p))
-                    for sample, info in sample_dict.items())
+        Methods.make_folder(output_folder)
+
+        cmd = ['fastp',
+               '--thread', str(cpu),
+               '--in1', r1,
+               '--out1', output_folder + '/' + sample + 'fastq.gz',
+               '--length_required', str(size),
+               '--cut_right',
+               '--html', output_folder + '/' + sample + '.html']
+
+        print('\t{}'.format(sample))
+        subprocess.run(cmd, stderr=subprocess.DEVNULL)
+
+    @staticmethod
+    def trim_illumina_pe(r1, output_folder, cpu, size):
+        r2 = r1.replace('_R1', '_R2')
+        sample = os.path.basename(r1).split('_R1')[0]
+
+        Methods.make_folder(output_folder)
+
+        cmd = ['fastp',
+               '--thread', str(cpu),
+               '--in1', r1,
+               '--in2', r2,
+               '--out1', output_folder + '/' + sample + '_R1.fastq.gz',
+               '--out2', output_folder + '/' + sample + '_R2.fastq.gz',
+               '--length_required', str(size),
+               '--cut_right',
+               '--html', output_folder + '/' + sample + '.html']
+
+        print('\t{}'.format(sample))
+        subprocess.run(cmd, stderr=subprocess.DEVNULL)
+
+    # @staticmethod
+    # def parallel_trim_reads(trim_function, adapter_dict, sample_dict, output_folder, mem, cpu, p):
+    #     print('Trimming reads...')
+    #     Methods.create_folders(output_folder)
+    #
+    #     with futures.ThreadPoolExecutor(max_workers=p) as executor:
+    #         # fastq, output_folder, adapter_dict, mem, cpu
+    #         args = ((info.file_path[0], output_folder, adapter_dict, mem, int(cpu/p))
+    #                 for sample, info in sample_dict.items())
+    #         for results in executor.map(lambda x: trim_function(*x), args):
+    #             pass
+
+    @staticmethod
+    def trim_iontorrent(r1, trimmed_folder, cpu, size):
+        sample = os.path.basename(r1).split('_R1')[0]
+        sample = sample.split('.')[0]
+
+        cmd = ['bbduk.sh',
+               'in={}'.format(r1),
+               'out={}'.format(trimmed_folder + sample + '.fastq.gz'),
+               'literal={}'.format(Methods.ion_adapter),
+               'k=21', 'mink=15', 'hdist=1', 'ktrim=r', 'trimq=6', 'minlength={}'.format(size),
+               'overwrite=t', 'threads={}'.format(cpu)]
+
+        print('\t{}'.format(sample))
+        # subprocess.run(cmd, stderr=subprocess.DEVNULL)
+        log_file = trimmed_folder + sample + '_bbduk.log'
+        with open(log_file, 'w') as f:
+            subprocess.run(cmd, stdout=f, stderr=subprocess.STDOUT)
+
+    @staticmethod
+    def read_length_dist(r1):
+        """
+        Make read length start of all reads combined, plot the distribution and find the peak.
+        Returns the optimal read length for trimming the reads for the ustacks.
+        """
+        cmd = ['readlength.sh',
+               'in={}'.format(r1),
+               'bin=5']
+        p = subprocess.Popen(cmd, stdout=subprocess.PIPE)
+        len_dist = p.communicate()[0].decode('utf-8')
+        lines = len_dist.split('\n')  # convert to list
+        len_dict = dict()  # Store sizes (keys) and lengths (values) into dictionary
+
+        for line in lines:
+            if line.startswith('#'):  # skip headers
+                continue
+            elif not line:  # Skip empty lines
+                continue
+            else:
+                fields = line.split('\t')[:2]
+                len_dict[fields[0]] = fields[1]  # get sizes and counts
+
+        return len_dict
+
+    @staticmethod
+    def parallel_read_length_dist(sample_dict, cpu):
+        master_len_dict = dict()
+        with futures.ThreadPoolExecutor(max_workers=cpu) as executor:
+            for results in executor.map(
+                    Methods.read_length_dist, [path_list[0] for sample, path_list in sample_dict.items()]):
+                for k, v in results.items():
+                    if k in master_len_dict:
+                        master_len_dict[int(k)] += int(v)
+                    else:
+                        master_len_dict[int(k)] = int(v)
+        # Convert dictionary to pandas dataframe
+        df = pd.DataFrame.from_dict(master_len_dict, orient='index')  # , columns=['Length', 'Count'])
+        df.index.names = ['Length']  # Rename index column
+        df.rename(columns={df.columns[0]: 'Count'}, inplace=True)  # rename count column
+
+        return df
+
+    @staticmethod
+    def find_peak(df, output_folder):
+        # plot the distribution
+        x = df.loc[:, 'Count'].values
+        y = df.index.values
+        xs = np.sort(x)
+        ys = np.array(y)[np.argsort(x)]
+
+        peaks, properties = find_peaks(x, prominence=1)
+        highest_peak = int(properties['prominences'].max())
+        p = np.interp(highest_peak, ys, xs)
+        size_to_keep = int(df[df['Count'] == int(p)].index.values) - 5  # 5 is bin size from readlength.sh
+
+        # Create figure with matplotlib
+        # TODO: use plotly instead
+        fig, ax = plt.subplots()
+        g = plt.plot(x)
+        plt.plot(peaks, x[peaks], "x")
+        plt.tight_layout()
+        fig.savefig(output_folder + "/peaks.png")
+        plt.close()
+
+        return size_to_keep
+
+    @staticmethod
+    def parallel_trim_reads(trim_function, sample_dict, output_folder, cpu, parallel, size):
+        print('Trimming reads...')
+        Methods.make_folder(output_folder)
+
+        with futures.ThreadPoolExecutor(max_workers=parallel) as executor:
+            args = ((path_list[0], output_folder, int(cpu / parallel), size)
+                    for sample, path_list in sample_dict.items())
             for results in executor.map(lambda x: trim_function(*x), args):
                 pass
 
@@ -378,7 +526,6 @@ class Methods(object):
 
     @staticmethod
     def move_files(input_folder, output_folder, ext):
-        to_move_list = list()
         for root, directories, filenames in os.walk(input_folder):
             for filename in filenames:
                 if filename.endswith(ext):  # accept a tuple or string
@@ -386,6 +533,34 @@ class Methods(object):
                     destination_file = os.path.join(output_folder, filename)
                     if source_file.endswith(ext):
                         os.replace(source_file, destination_file)
+
+    @staticmethod
+    def bgzip_file(gvcf_file, cpu):
+        cmd_bgzip = ['bgzip',
+               '--threads', str(cpu),
+               # '--index',
+               gvcf_file]
+        subprocess.run(cmd_bgzip)
+
+        cmd_index = ['tabix',
+                     '-p', 'vcf',
+                     gvcf_file + '.gz']
+        subprocess.run(cmd_index)
+
+    @staticmethod
+    def parallel_bgzip_files(input_folder, cpu, p):
+        print('Compressing and indexing gVCF files...')
+        file_list = list()
+        for root, directories, filenames in os.walk(input_folder):
+            for filename in filenames:
+                if filename.endswith('.gvcf'):  # accept a tuple or string
+                    source_file = os.path.join(root, filename)
+                    file_list.append(source_file)
+
+        with futures.ThreadPoolExecutor(max_workers=p) as executor:
+            args = ((f, int(cpu / p)) for f in file_list)
+            for results in executor.map(lambda x: Methods.bgzip_file(*x), args):
+                pass
 
     @staticmethod
     def vcf_to_pandas(vcf):
@@ -424,6 +599,45 @@ class Methods(object):
                     vcf_dict[k]['GENO'] = [(sample, geno)]
 
         return vcf_dict
+
+    @staticmethod
+    def merge_gvcf(ref, input_folder, output_vcf, cpu):
+        gvcf_list = list()
+        for root, directories, filenames in os.walk(input_folder):
+            for filename in filenames:
+                if filename.endswith('.gvcf.gz'):  # accept a tuple or string
+                    gvcf_list.append(os.path.join(root, filename))
+
+        cmd = ['bcftools', 'merge',
+               '--output', output_vcf,
+               '--output-type', 'v',
+               '--gvcf', ref,
+               '--threads', str(cpu)] + gvcf_list
+
+        subprocess.run(cmd)
+
+    @staticmethod
+    def convert_gvcf_to_vcf(ref, gvcf_file, vcf_file, cpu):
+        cmd = ['bcftools', 'convert',
+               '--gvcf2vcf',
+               '--output', vcf_file,
+               '--output-type', 'v',
+               '--threads', str(cpu),
+               '--fasta-ref', ref,
+               gvcf_file]
+        subprocess.run(cmd)
+
+    @staticmethod
+    def fix_merged_vcf(input_vcf, output_vcf):
+        with open(output_vcf, 'w') as out_fh:
+            with open(input_vcf, 'r') as in_fh:
+                for line in in_fh:
+                    if '\t<*>\t' in line:
+                        continue
+                    else:
+                        line = line.replace('<*>,', '')
+                        line = line.replace(',<*>', '')
+                    out_fh.write(line)
 
     @staticmethod
     def merge_vcf(input_folder, output_vcf):
@@ -558,6 +772,7 @@ class Methods(object):
 
     @staticmethod
     def filter_variants(vcf_in, vcf_out):
+        print('Filtering variants...')
         # https://vcftools.github.io/man_latest.html
         cmd = ['vcftools',
                '--vcf', vcf_in,
@@ -566,9 +781,10 @@ class Methods(object):
                '--maf', str(0.05),
                '--min-alleles', str(2),
                '--max-alleles', str(2),
-               '--minDP', str(5),  # vs '--min-meanDP'
+               '--minDP', str(20),  # vs '--min-meanDP'
+               '--max-missing', str(0.5),
                '--minQ', str(20),
-               '--remove-filtered-geno-all',
+               '--remove-filtered-all',
                '--recode']
 
         subprocess.run(cmd)
